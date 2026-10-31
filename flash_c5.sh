@@ -11,6 +11,7 @@
 #   -d  Thư mục chứa các file .bin (mặc định: ./bins)
 #   -p  Chỉ định cổng serial (mặc định: tự dò cổng USB mới cắm)
 #   -b  Baud rate (mặc định: 921600; lỗi thì thử 115200)
+#   -r  Kiểu reset: usb_reset (mặc định, USB-JTAG tích hợp) | default_reset | no_reset
 #   -y  Bỏ qua hỏi xác nhận (chạy thẳng)
 #
 # CÁC FILE .BIN CẦN CÓ trong thư mục bins:
@@ -37,6 +38,11 @@ BINS_DIR="./bins"
 PORT=""
 BAUD="921600"
 ASSUME_YES="0"
+# Kiểu reset trước khi nạp:
+#   usb_reset     - USB-Serial-JTAG tích hợp (VID 303A) <- board này, KHÔNG cần giữ BOOT
+#   default_reset - cầu USB-serial ngoài (FTDI/CP210x)
+#   no_reset      - đã vào download mode bằng tay (giữ BOOT + cắm USB)
+RESET_MODE="usb_reset"
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; CYN=$'\033[36m'; RST=$'\033[0m'
 info(){ printf "%s[*]%s %s\n" "$CYN" "$RST" "$1"; }
@@ -45,11 +51,12 @@ warn(){ printf "%s[!]%s %s\n" "$YLW" "$RST" "$1"; }
 err(){  printf "%s[x]%s %s\n" "$RED" "$RST" "$1" >&2; }
 die(){  err "$1"; exit 1; }
 
-while getopts "d:p:b:yh" opt; do
+while getopts "d:p:b:r:yh" opt; do
   case "$opt" in
     d) BINS_DIR="$OPTARG" ;;
     p) PORT="$OPTARG" ;;
     b) BAUD="$OPTARG" ;;
+    r) RESET_MODE="$OPTARG" ;;
     y) ASSUME_YES="1" ;;
     h) sed -n '2,40p' "$0"; exit 0 ;;
     *) die "Tham số không hợp lệ. Dùng -h để xem trợ giúp." ;;
@@ -133,7 +140,7 @@ fi
 
 # ---- Xác nhận đúng chip ESP32-C5 trước khi xóa ----
 info "Kiểm tra chip..."
-if ! "${ESPTOOL[@]}" --chip "$CHIP" --port "$PORT" chip_id 2>&1 | tee /tmp/c5_chipid.log | grep -qi "ESP32-C5"; then
+if ! "${ESPTOOL[@]}" --chip "$CHIP" --port "$PORT" --before "$RESET_MODE" chip_id 2>&1 | tee /tmp/c5_chipid.log | grep -qi "ESP32-C5"; then
   warn "Không xác nhận được 'ESP32-C5' (xem /tmp/c5_chipid.log)."
   warn "Có thể bạn đang cắm nhầm Port A (con ESP32 màn hình) hoặc chưa vào download mode."
   if [ "$ASSUME_YES" != "1" ]; then
@@ -144,11 +151,11 @@ fi
 
 # ---- Erase ----
 info "ERASE flash..."
-"${ESPTOOL[@]}" --chip "$CHIP" --port "$PORT" --baud "$BAUD" erase_flash
+"${ESPTOOL[@]}" --chip "$CHIP" --port "$PORT" --baud "$BAUD" --before "$RESET_MODE" erase_flash
 ok "Đã erase."
 
 # ---- Flash ----
-FLASH_ARGS=(--chip "$CHIP" --port "$PORT" --baud "$BAUD" --before default_reset --after hard_reset
+FLASH_ARGS=(--chip "$CHIP" --port "$PORT" --baud "$BAUD" --before "$RESET_MODE" --after hard_reset
             write_flash -z
             "$OFF_BOOTLOADER" "$BOOTLOADER"
             "$OFF_PARTITIONS" "$PARTITIONS")
@@ -162,9 +169,9 @@ ok "Đã flash."
 # ---- Verify ----
 info "VERIFY (bootloader + partitions + app)..."
 VERIFY_OK=1
-"${ESPTOOL[@]}" --chip "$CHIP" --port "$PORT" --baud "$BAUD" verify_flash "$OFF_BOOTLOADER" "$BOOTLOADER" || VERIFY_OK=0
-"${ESPTOOL[@]}" --chip "$CHIP" --port "$PORT" --baud "$BAUD" verify_flash "$OFF_PARTITIONS" "$PARTITIONS" || VERIFY_OK=0
-"${ESPTOOL[@]}" --chip "$CHIP" --port "$PORT" --baud "$BAUD" verify_flash "$OFF_APP" "$APP" || VERIFY_OK=0
+"${ESPTOOL[@]}" --chip "$CHIP" --port "$PORT" --baud "$BAUD" --before "$RESET_MODE" verify_flash "$OFF_BOOTLOADER" "$BOOTLOADER" || VERIFY_OK=0
+"${ESPTOOL[@]}" --chip "$CHIP" --port "$PORT" --baud "$BAUD" --before "$RESET_MODE" verify_flash "$OFF_PARTITIONS" "$PARTITIONS" || VERIFY_OK=0
+"${ESPTOOL[@]}" --chip "$CHIP" --port "$PORT" --baud "$BAUD" --before "$RESET_MODE" verify_flash "$OFF_APP" "$APP" || VERIFY_OK=0
 
 echo
 if [ "$VERIFY_OK" = "1" ]; then
